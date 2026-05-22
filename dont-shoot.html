@@ -244,17 +244,62 @@ const NPC_TYPES = [
   { body: '#8e24aa', hat: '#4a148c', pants: '#33691e', skin: '#ffccbc' }, // purple
 ];
 
+// ─── Doors & NPC spawn ────────────────────────────────────────────────────────
+// Doors are fixed positions on each edge, drawn on background
+const DOOR_DEFS = [
+  // side: 0=top,1=right,2=bottom,3=left
+  { side: 0, t: 0.25 }, { side: 0, t: 0.5 }, { side: 0, t: 0.75 },
+  { side: 1, t: 0.3  }, { side: 1, t: 0.6 }, { side: 1, t: 0.8 },
+  { side: 2, t: 0.25 }, { side: 2, t: 0.5 }, { side: 2, t: 0.75 },
+  { side: 3, t: 0.3  }, { side: 3, t: 0.6 }, { side: 3, t: 0.8 },
+];
+
+function getDoorPos(door) {
+  const W = canvas.width, H = canvas.height;
+  if (door.side === 0) return { x: W * door.t, y: 0,  dx:  0, dy:  1 };
+  if (door.side === 1) return { x: W,          y: H * door.t, dx: -1, dy:  0 };
+  if (door.side === 2) return { x: W * door.t, y: H,  dx:  0, dy: -1 };
+  return                      { x: 0,          y: H * door.t, dx:  1, dy:  0 };
+}
+
+function drawDoors() {
+  DOOR_DEFS.forEach(door => {
+    const { x, y, dx, dy } = getDoorPos(door);
+    ctx.save();
+    ctx.translate(x, y);
+    // Rotate door frame to face inward
+    const angle = Math.atan2(dy, dx) - Math.PI/2;
+    ctx.rotate(angle);
+    // Door frame
+    ctx.fillStyle = '#5d4037';
+    ctx.fillRect(-16, -4, 32, 8);
+    // Door opening
+    ctx.fillStyle = '#8d6e63';
+    ctx.fillRect(-12, -3, 24, 6);
+    // Door arch top
+    ctx.fillStyle = '#4e342e';
+    ctx.beginPath(); ctx.ellipse(0, -4, 14, 6, 0, Math.PI, 0); ctx.fill();
+    ctx.restore();
+  });
+}
+
 function spawnNPC() {
   const type = NPC_TYPES[Math.floor(Math.random() * NPC_TYPES.length)];
-  const x = 30 + Math.random() * (canvas.width - 60);
+  // Pick a random door
+  const door = DOOR_DEFS[Math.floor(Math.random() * DOOR_DEFS.length)];
+  const { x, y, dx, dy } = getDoorPos(door);
+  const speed = 1.0 + Math.random() * 0.8;
   return {
-    x, y: -30,
-    speed: 1.0 + Math.random() * 0.8, // base speed, scaled by difficulty in update
+    x, y,
+    vx: dx * speed,
+    vy: dy * speed,
+    speed,
     r: 16,
     type,
     walkPhase: Math.random() * Math.PI * 2,
     alive: true,
     scared: false,
+    entryTimer: 0.4, // brief spawn-in animation
   };
 }
 
@@ -431,11 +476,14 @@ function drawNPC(npc) {
   const t = npc.type;
   npc.walkPhase = (npc.walkPhase || 0) + 0.14;
   const bob = Math.sin(npc.walkPhase) * 2.5;
+  // Entry pop-in scale
+  const entryScale = npc.entryTimer > 0 ? (1 - npc.entryTimer * 1.5) : 1;
+  // Flip horizontally based on walk direction
+  const flipX = npc.vx < 0 ? -1 : 1;
 
   ctx.save();
   ctx.translate(npc.x, npc.y + bob);
-
-  if (npc.scared) ctx.save();
+  ctx.scale(flipX * entryScale, entryScale);
 
   // Shadow
   ctx.save(); ctx.globalAlpha = 0.15;
@@ -447,7 +495,6 @@ function drawNPC(npc) {
   ctx.fillStyle = t.pants;
   ctx.beginPath(); ctx.roundRect(-8+legSwing*0.3, 10, 6, 11, 2); ctx.fill();
   ctx.beginPath(); ctx.roundRect(2-legSwing*0.3, 10, 6, 11, 2); ctx.fill();
-  // Shoes
   ctx.fillStyle = '#111';
   ctx.beginPath(); ctx.ellipse(-5+legSwing*0.3, 22, 5, 2.5, 0, 0, Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.ellipse(5-legSwing*0.3, 22, 5, 2.5, 0, 0, Math.PI*2); ctx.fill();
@@ -461,13 +508,11 @@ function drawNPC(npc) {
   ctx.fillStyle = t.skin;
   ctx.beginPath(); ctx.arc(0, -11, 10, 0, Math.PI*2); ctx.fill();
 
-  // Red hat (GDD: all NPCs have the iconic small red hat)
+  // Red hat
   ctx.fillStyle = '#d32f2f';
   ctx.beginPath(); ctx.ellipse(0, -18, 10, 5.5, 0, Math.PI, 0); ctx.fill();
   ctx.fillRect(-11, -18, 22, 3);
-  // Hat brim highlight
-  ctx.fillStyle = '#ef5350';
-  ctx.fillRect(-11, -18, 22, 2);
+  ctx.fillStyle = '#ef5350'; ctx.fillRect(-11, -18, 22, 2);
 
   // Eyes
   const eyeSize = npc.scared ? 3.2 : 2;
@@ -485,61 +530,108 @@ function drawNPC(npc) {
   else { ctx.arc(0, -9, 3, 0.2, Math.PI-0.2); }
   ctx.stroke();
 
-  // Sweat if scared
   if (npc.scared) {
     ctx.fillStyle = '#64b5f6';
     ctx.beginPath(); ctx.arc(12, -14, 3, 0, Math.PI*2); ctx.fill();
-    ctx.restore();
   }
 
   ctx.restore();
 }
 
-// ─── Background ───────────────────────────────────────────────────────────────
+// ─── Background scenes ────────────────────────────────────────────────────────
+// Multiple scene types, picked randomly each game
+const SCENES = ['ice', 'grass', 'desert', 'night'];
+let currentScene = 'ice';
+
+function pickScene() {
+  currentScene = SCENES[Math.floor(Math.random() * SCENES.length)];
+}
+
 function drawBackground() {
   const W = canvas.width, H = canvas.height;
-
-  // Sky gradient
-  const skyGrad = ctx.createLinearGradient(0, 0, 0, H * 0.6);
-  skyGrad.addColorStop(0, '#1565c0');
-  skyGrad.addColorStop(1, '#42a5f5');
-  ctx.fillStyle = skyGrad;
-  ctx.fillRect(0, 0, W, H * 0.6);
-
-  // Ground gradient
-  const groundGrad = ctx.createLinearGradient(0, H*0.55, 0, H);
-  groundGrad.addColorStop(0, '#a5d6a7');
-  groundGrad.addColorStop(0.3, '#81c784');
-  groundGrad.addColorStop(1, '#388e3c');
-  ctx.fillStyle = groundGrad;
-  ctx.fillRect(0, H*0.55, W, H*0.45);
-
-  // Ground line / path
-  ctx.fillStyle = '#c8e6c9';
-  ctx.fillRect(0, H*0.56, W, H*0.02);
-
-  // Some clouds
-  drawCloud(W*0.15, H*0.08, 50);
-  drawCloud(W*0.55, H*0.05, 65);
-  drawCloud(W*0.82, H*0.12, 40);
-
-  // Ground grid lines (subtle)
-  ctx.strokeStyle = '#66bb6a44'; ctx.lineWidth = 1;
-  for (let gx = 0; gx < W; gx += 40) {
-    ctx.beginPath(); ctx.moveTo(gx, H*0.57); ctx.lineTo(gx, H); ctx.stroke();
-  }
+  if (currentScene === 'ice') drawIceScene(W, H);
+  else if (currentScene === 'grass') drawGrassScene(W, H);
+  else if (currentScene === 'desert') drawDesertScene(W, H);
+  else drawNightScene(W, H);
 }
 
-function drawCloud(x, y, size) {
-  ctx.save();
-  ctx.globalAlpha = 0.75;
-  ctx.fillStyle = '#e3f2fd';
-  [[-size*0.4,0],[0,-size*0.25],[size*0.4,0],[0,size*0.1]].forEach(([dx,dy],i) => {
-    ctx.beginPath();
-    ctx.arc(x+dx, y+dy, size*(0.3+i*0.03), 0, Math.PI*2);
-    ctx.fill();
+function drawIceScene(W, H) {
+  // Ice rink — top-down view, full floor
+  ctx.fillStyle = '#b3e5fc'; ctx.fillRect(0, 0, W, H);
+  // Ice tile grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 48) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 48) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  // Sheen patches
+  ctx.save(); ctx.globalAlpha = 0.18;
+  [[W*0.2,H*0.3,60,18],[W*0.7,H*0.6,80,22],[W*0.5,H*0.15,50,14]].forEach(([x,y,rx,ry]) => {
+    ctx.fillStyle='#fff'; ctx.beginPath(); ctx.ellipse(x,y,rx,ry,0.3,0,Math.PI*2); ctx.fill();
   });
   ctx.restore();
+  // Rink border
+  ctx.strokeStyle = '#0288d1'; ctx.lineWidth = 8;
+  ctx.strokeRect(4, 4, W-8, H-8);
+}
+
+function drawGrassScene(W, H) {
+  // Alternating grass stripes (lawn/park feel)
+  for (let y = 0; y < H; y += 44) {
+    ctx.fillStyle = y % 88 === 0 ? '#66bb6a' : '#81c784';
+    ctx.fillRect(0, y, W, 44);
+  }
+  // Subtle vertical lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 44) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  // Path down center
+  ctx.fillStyle = '#bcaaa4';
+  ctx.fillRect(W*0.35, 0, W*0.3, H);
+  ctx.strokeStyle = '#fff8'; ctx.lineWidth = 2; ctx.setLineDash([20,16]);
+  ctx.beginPath(); ctx.moveTo(W*0.5, 0); ctx.lineTo(W*0.5, H); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawDesertScene(W, H) {
+  ctx.fillStyle = '#ffe082'; ctx.fillRect(0, 0, W, H);
+  // Sand dune stripes
+  for (let y = 0; y < H; y += 36) {
+    ctx.fillStyle = y % 72 === 0 ? '#ffca28' : '#ffd54f';
+    ctx.fillRect(0, y, W, 36);
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 44) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  // Cactus silhouettes
+  ctx.fillStyle = '#388e3c';
+  [[W*0.1, H*0.6],[W*0.85, H*0.4],[W*0.6, H*0.75]].forEach(([x,y]) => {
+    ctx.fillRect(x-5, y-30, 10, 35);
+    ctx.fillRect(x-18, y-15, 13, 8);
+    ctx.fillRect(x+5, y-10, 13, 8);
+  });
+}
+
+function drawNightScene(W, H) {
+  ctx.fillStyle = '#1a237e'; ctx.fillRect(0, 0, W, H);
+  // Tile grid
+  ctx.strokeStyle = 'rgba(100,130,255,0.25)'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 48) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 48) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  // Stars
+  ctx.fillStyle = '#fffde7';
+  [[30,40],[100,80],[200,30],[320,90],[380,50],[60,200],[280,160],[150,300]].forEach(([x,y]) => {
+    ctx.save(); ctx.globalAlpha = 0.7 + Math.sin(bgBobT*2+x)*0.3;
+    ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  });
+  // Lamp posts
+  ctx.strokeStyle = '#ffd54f'; ctx.lineWidth = 3;
+  [[W*0.1, H*0.5],[W*0.9, H*0.5]].forEach(([x,y]) => {
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y-60); ctx.stroke();
+    ctx.save(); ctx.globalAlpha = 0.25;
+    ctx.fillStyle = '#ffe082';
+    ctx.beginPath(); ctx.arc(x, y-60, 30, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = '#ffd54f';
+    ctx.beginPath(); ctx.arc(x, y-60, 6, 0, Math.PI*2); ctx.fill();
+  });
 }
 
 // ─── Particles ────────────────────────────────────────────────────────────────
@@ -698,7 +790,7 @@ function update(dt) {
     cd.textContent = `🔥 x${combo} COMBO!`;
   }
 
-  // NPCs — spawn from top, walk downward
+  // NPCs — spawn from doors on any edge, walk toward opposite side
   npcTimer -= dt;
   const maxNpcs = Math.min(3 + Math.floor(score / 8), 10);
   const spawnInterval = Math.max(0.6, 2.2 - score * 0.04);
@@ -710,6 +802,9 @@ function update(dt) {
     const npc = npcs[i];
     if (!npc.alive) { npcs.splice(i,1); continue; }
 
+    // Entry animation
+    if (npc.entryTimer > 0) { npc.entryTimer -= dt; }
+
     // Scared if bullet nearby
     let bulletNear = false;
     for (const b of bullets) {
@@ -717,9 +812,15 @@ function update(dt) {
     }
     npc.scared = bulletNear;
 
-    // Walk downward; speed scales with difficulty
-    npc.y += npc.speed * diff * (npc.scared ? 1.8 : 1);
-    if (npc.y > canvas.height + 50) npcs.splice(i, 1);
+    // Walk in door direction, scaled by difficulty
+    const speedMul = diff * (npc.scared ? 2.0 : 1);
+    npc.x += npc.vx * speedMul;
+    npc.y += npc.vy * speedMul;
+
+    // Remove when fully off screen
+    if (npc.x < -60 || npc.x > canvas.width+60 || npc.y < -60 || npc.y > canvas.height+60) {
+      npcs.splice(i, 1);
+    }
   }
 
   // Particles
@@ -744,6 +845,7 @@ function update(dt) {
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawBackground();
+  drawDoors();
 
   // Blocks (behind player)
   blocks.forEach(b => { if (b.alive) drawBlock3D(b); });
@@ -830,9 +932,9 @@ function initGame() {
   npcTimer = 2;
   document.getElementById('score-display').textContent = '0';
   document.getElementById('combo-display').style.opacity = '0';
+  pickScene();
   P.init();
   spawnBlocks();
-  // hide joystick during menu, show during play
   document.getElementById('joy-wrap').style.display = 'flex';
 }
 
